@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,11 @@ func New(k8s *k8sclient.Client, rdb *redis.Client, namespace string, target int)
 		rdb:       rdb,
 		namespace: namespace,
 		interval:  30 * time.Second,
+	}
+	if target < 0 {
+		target = 0
+	} else if target > math.MaxInt32 {
+		target = math.MaxInt32
 	}
 	m.target.Store(int32(target))
 
