@@ -1,0 +1,25 @@
+FROM node:22-bookworm-slim
+
+# Install system deps (git required by openclaw's npm dependency chain)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    gettext-base \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install OpenClaw — pin version for reproducibility
+# To upgrade: update OPENCLAW_VERSION and rebuild
+ARG OPENCLAW_VERSION=2026.2.22-2
+RUN npm install -g openclaw@${OPENCLAW_VERSION}
+
+# Startup script
+COPY scripts/openclaw-start.sh /start.sh
+RUN chmod +x /start.sh
+
+EXPOSE 18789
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=6 \
+    CMD curl -sf http://localhost:18789/healthz || exit 1
+
+CMD ["/start.sh"]

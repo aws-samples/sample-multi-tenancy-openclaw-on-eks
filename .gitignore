@@ -1,0 +1,35 @@
+# Binaries
+/bin/
+/router
+/orchestrator
+/otm
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Dependencies
+vendor/
+node_modules/
+CONTEXT.md
+CHANGELOG.md
+README.aws-samples.md

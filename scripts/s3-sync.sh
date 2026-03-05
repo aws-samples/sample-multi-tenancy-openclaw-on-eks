@@ -1,0 +1,25 @@
+#!/bin/sh
+# s3-sync.sh — sync OpenClaw state and workspace to S3.
+# Used by both the periodic s3-sync sidecar loop and the PreStop lifecycle hook.
+# Required env vars: S3_BUCKET, TENANT_ID, AWS_REGION
+# Required volume mounts: /openclaw-state, /workspace
+
+STATE="s3://${S3_BUCKET}/tenants/${TENANT_ID}/state/"
+WORK="s3://${S3_BUCKET}/tenants/${TENANT_ID}/workspace/"
+
+ts() { date -u '+%Y-%m-%dT%H:%M:%S.000Z'; }
+log() { echo "$(ts) [s3-sync] $*"; }
+
+log "syncing state to ${STATE}"
+aws s3 sync /openclaw-state/ "${STATE}" \
+  --exclude 'openclaw.json' --exclude 'openclaw.json.*' \
+  --exclude '*.lock' \
+  --region "${AWS_REGION}" --quiet 2>&1 \
+  && log 'state OK' || log 'state FAIL'
+
+log "syncing workspace to ${WORK}"
+aws s3 sync /workspace/ "${WORK}" \
+  --exclude '*/.workspace-state.json.*' --exclude '*/workspace-state.json.tmp-*' \
+  --exclude '.workspace-state.json.*' --exclude 'workspace-state.json.tmp-*' \
+  --region "${AWS_REGION}" --quiet 2>&1 \
+  && log 'workspace OK' || log 'workspace FAIL'

@@ -1,0 +1,83 @@
+---
+# Namespace for all tenant pods
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenants
+---
+# Shared ServiceAccount for tenant pods (Bedrock access only)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openclaw-tenant
+  namespace: tenants
+---
+# ServiceAccount for Orchestrator
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orchestrator
+  namespace: tenants
+---
+# ClusterRole: Orchestrator needs to manage Pods, PVCs, PVs, and Leases
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: orchestrator
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/status"]
+  verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims"]
+  verbs: ["get", "list", "create", "delete"]
+- apiGroups: [""]
+  resources: ["persistentvolumes"]
+  verbs: ["get", "list", "create", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "create", "update", "patch"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: orchestrator
+subjects:
+- kind: ServiceAccount
+  name: orchestrator
+  namespace: tenants
+roleRef:
+  kind: ClusterRole
+  name: orchestrator
+  apiGroup: rbac.authorization.k8s.io
+---
+# PriorityClass for normal tenant pods
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: tenant-normal
+value: 1000
+globalDefault: false
+description: "Normal priority for tenant OpenClaw pods"
+---
+# PriorityClass for warm pool placeholder pods (preemptible)
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: tenant-low
+value: 100
+globalDefault: false
+preemptionPolicy: Never
+description: "Low priority warm pool placeholder pods — preemptible by tenant-normal"
+---
+# StorageClass for S3 CSI (kata-qemu uses virtiofs to pass FUSE mount into VM)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: s3-tenant-state
+provisioner: s3.csi.aws.com
+reclaimPolicy: Retain
+volumeBindingMode: Immediate

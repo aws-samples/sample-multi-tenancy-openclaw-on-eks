@@ -1,0 +1,38 @@
+---
+# IAM Role for tenant pods — managed via EKS Pod Identity
+# Apply order: after 00-prerequisites.yaml (ServiceAccount must exist)
+#
+# AWS-side setup (one-time, done via CLI / Terraform):
+#   1. IAM Role: openclaw-tenant-pod
+#      Trust policy: pods.eks.amazonaws.com (sts:AssumeRole + sts:TagSession)
+#   2. IAM Policy: openclaw-tenant-bedrock
+#      Allows bedrock:InvokeModel + bedrock:InvokeModelWithResponseStream
+#   3. EKS Pod Identity Association:
+#      cluster: my-eks-cluster
+#      namespace: tenants
+#      serviceAccount: openclaw-tenant
+#      roleArn: arn:aws:iam::123456789012:role/openclaw-tenant-pod
+#
+# This file documents the k8s side — no annotation needed on ServiceAccount
+# for Pod Identity (unlike IRSA). The webhook injects credentials automatically.
+#
+# To verify association is active:
+#   aws eks list-pod-identity-associations --cluster-name my-eks-cluster
+#   kubectl exec -n tenants <pod> -- env | grep AWS_CONTAINER_CREDENTIALS
+
+# No Kubernetes manifest needed for Pod Identity association itself —
+# it is managed as an EKS API resource (aws eks create-pod-identity-association).
+# This file serves as documentation + the bootstrapping script below.
+
+---
+# The openclaw-tenant ServiceAccount intentionally has NO annotations.
+# Pod Identity is wired at the EKS level, not via SA annotations (that's IRSA).
+# Keeping it clean makes it easy to switch between IRSA and Pod Identity.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openclaw-tenant
+  namespace: tenants
+  labels:
+    app: openclaw
+    component: tenant-pod

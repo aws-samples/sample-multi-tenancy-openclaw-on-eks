@@ -1,0 +1,249 @@
+---
+# Policy 1: Tenant Pod Isolation (most critical)
+# All tenant pods (app=openclaw): only Router can reach them, egress open to external
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tenant-pod-isolation
+  namespace: tenants
+spec:
+  podSelector:
+    matchLabels:
+      app: openclaw
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: router
+      ports:
+        - protocol: TCP
+          port: 8787
+        - protocol: TCP
+          port: 18789   # OpenClaw gateway healthz (router healthz poll)
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # EKS Pod Identity Agent — required for AWS credential retrieval
+    - to:
+        - ipBlock:
+            cidr: 169.254.170.23/32
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+    # IMDS — instance metadata token
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 80
+    # All external (except VPC + service CIDRs)
+    # AI agents need unrestricted outbound access
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - <VPC_CIDR>
+              - 172.20.0.0/16
+
+---
+# Policy 2: Router
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: router-policy
+  namespace: tenants
+spec:
+  podSelector:
+    matchLabels:
+      app: router
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: <VPC_CIDR>
+      ports:
+        - protocol: TCP
+          port: 9090
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Router → Orchestrator
+    - to:
+        - podSelector:
+            matchLabels:
+              app: orchestrator
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Router → Redis
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    # Router → Tenant pods
+    - to:
+        - podSelector:
+            matchLabels:
+              app: openclaw
+      ports:
+        - protocol: TCP
+          port: 8787
+        - protocol: TCP
+          port: 18789
+    # Router → external HTTPS (Telegram API)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - <VPC_CIDR>
+              - 172.20.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# Policy 3: Orchestrator
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orchestrator-policy
+  namespace: tenants
+spec:
+  podSelector:
+    matchLabels:
+      app: orchestrator
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: router
+      ports:
+        - protocol: TCP
+          port: 8080
+    # kubelet health probes + warm-pool controller
+    - from:
+        - ipBlock:
+            cidr: <VPC_CIDR>
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Orchestrator → Redis
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    # K8s API server
+    - to:
+        - ipBlock:
+            cidr: 172.20.0.1/32
+      ports:
+        - protocol: TCP
+          port: 443
+    # EKS Pod Identity Agent
+    - to:
+        - ipBlock:
+            cidr: 169.254.170.23/32
+      ports:
+        - protocol: TCP
+          port: 80
+    # External HTTPS (DynamoDB, Telegram API)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - <VPC_CIDR>
+              - 172.20.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# Policy 4: Redis — accept from orchestrator + router only, no egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-policy
+  namespace: tenants
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: orchestrator
+        - podSelector:
+            matchLabels:
+              app: router
+      ports:
+        - protocol: TCP
+          port: 6379
+  egress: []
+
+---
+# Policy 5: Warm Pool — no network needed (sleep infinity)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: warm-pool-policy
+  namespace: tenants
+spec:
+  podSelector:
+    matchLabels:
+      app: warm-pool
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress: []

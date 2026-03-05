@@ -1,0 +1,188 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  namespace: tenants
+  labels:
+    app: orchestrator
+spec:
+  replicas: 2                        # HA: 2 replicas, leader election handles idle timeout
+  selector:
+    matchLabels:
+      app: orchestrator
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+    spec:
+      serviceAccountName: orchestrator
+      containers:
+      - name: orchestrator
+        image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/orchestrator:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DYNAMODB_TABLE
+          value: "tenant-registry"
+        - name: DYNAMODB_REGION
+          value: "<AWS_REGION>"
+        - name: REDIS_ADDR
+          valueFrom:
+            secretKeyRef:
+              name: orchestrator-config
+              key: redis-addr
+        - name: K8S_NAMESPACE
+          value: "tenants"
+        - name: S3_BUCKET
+          value: "<S3_BUCKET>"
+        - name: S3_REGION
+          value: "<AWS_REGION>"
+        - name: WARM_POOL_TARGET
+          value: "2"
+        - name: OPENCLAW_IMAGE
+          value: "<AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/openclaw:latest"
+        - name: KATA_RUNTIME_CLASS
+          value: "kata-qemu"
+        - name: ROUTER_PUBLIC_URL
+          value: "https://<YOUR_ROUTER_DOMAIN>"
+        - name: PORT
+          value: "8080"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator
+  namespace: tenants
+spec:
+  selector:
+    app: orchestrator
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: router
+  namespace: tenants
+  labels:
+    app: router
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: router
+  template:
+    metadata:
+      labels:
+        app: router
+    spec:
+      containers:
+      - name: router
+        image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/router:latest
+        ports:
+        - containerPort: 9090
+        env:
+        - name: REDIS_ADDR
+          valueFrom:
+            secretKeyRef:
+              name: orchestrator-config
+              key: redis-addr
+        - name: ORCHESTRATOR_ADDR
+          value: "http://orchestrator.tenants.svc.cluster.local:8080"
+        - name: PORT
+          value: "9090"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9090
+          initialDelaySeconds: 3
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: router
+  namespace: tenants
+spec:
+  selector:
+    app: router
+  ports:
+  - port: 80
+    targetPort: 9090
+  type: ClusterIP
+---
+# Warm pool: pre-warmed Kata VMs with openclaw image cached.
+# Orchestrator claims these pods for new tenants (fast cold start).
+# Uses tenant-low PriorityClass so real tenants can preempt if needed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warm-pool
+  namespace: tenants
+  labels:
+    app: warm-pool
+spec:
+  replicas: 2                        # Match WARM_POOL_TARGET in orchestrator env
+  selector:
+    matchLabels:
+      app: warm-pool
+  template:
+    metadata:
+      labels:
+        app: warm-pool
+    spec:
+      serviceAccountName: openclaw-tenant
+      runtimeClassName: kata-qemu
+      priorityClassName: tenant-low
+      terminationGracePeriodSeconds: 10
+      nodeSelector:
+        katacontainers.io/kata-runtime: "true"
+      tolerations:
+      - key: kata-runtime
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+      containers:
+      - name: openclaw
+        image: <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/openclaw:latest
+        imagePullPolicy: Always
+        command: ["sleep", "infinity"]
+        resources:
+          requests:
+            cpu: 200m
+            memory: 1Gi
+          limits:
+            cpu: "1"
+            memory: 2Gi
