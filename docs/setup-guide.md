@@ -678,8 +678,8 @@ kubectl exec -n tenants test-tenant -- env | grep AWS_CONTAINER_CREDENTIALS
 
 ### First message lost after cold start
 
-**Cause**: Router forwarded before OpenClaw Gateway was ready.
-**Fix**: Router implements `waitForGateway` with healthz polling on port 18789.
+**Cause**: Router forwarded before OpenClaw webhook handler was ready. Gateway healthz (`:18789`) returns 200 before the webhook (`:8787`) is listening.
+**Fix**: Router probes `:8787` (webhook port) instead of `:18789` (gateway healthz). ReadinessProbe also uses `tcpSocket :8787` so pod Ready means webhook is actually listening.
 
 ### OpenClaw Gateway slow on arm64
 
@@ -835,7 +835,7 @@ aws ssm send-command \
   --region $REGION
 ```
 
-**TODO**: Investigate `hostPID: true` on the DaemonSet to fix nsenter.
+**Fix**: Add `hostPID: true` to the kata-deploy DaemonSet spec. Without it, `nsenter` cannot restart containerd after installing Kata runtime classes.
 
 ### A7. NetworkPolicy Must Allow Pod Identity Agent
 

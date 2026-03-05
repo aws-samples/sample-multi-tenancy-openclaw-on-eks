@@ -65,7 +65,7 @@ flowchart TB
         TG(["☁ Telegram API"])
     end
 
-    subgraph aws ["AWS · us-west-2"]
+    subgraph aws ["AWS"]
         subgraph vpc ["VPC · 10.0.0.0/16"]
             ALB["⚡ Application Load Balancer<br/><sub>HTTPS · ACM cert</sub>"]
 
@@ -81,12 +81,12 @@ flowchart TB
 
                     subgraph metal ["Bare Metal Nodes · c6i/c7i.metal · amd64"]
                         direction LR
-                        TP1["🧠 Tenant Pod<br/><sub>Kata VM (QEMU)<br/>:8787 webhook<br/>:18789 healthz</sub>"]
+                        TP1["🧠 Tenant Pod<br/><sub>Kata VM (QEMU)<br/>:8787 webhook</sub>"]
                         TP2["🧠 Tenant Pod<br/><sub>Kata VM (QEMU)</sub>"]
                         WP["💤 Warm Pool<br/><sub>Deployment ×N<br/>sleep ∞ · image prefetch</sub>"]
                     end
 
-                    NP{{"NetworkPolicy<br/><sub>Calico iptables<br/>policy-only</sub>"}}
+                    NP{{"NetworkPolicy<br/><sub>VPC CNI eBPF<br/>standard mode</sub>"}}
                 end
 
                 KP["Karpenter<br/><sub>NodePool: kata-metal<br/>on-demand · amd64 only</sub>"]
@@ -144,7 +144,7 @@ block cross-tenant" .-> metal
 | Instance type | `c6i/c7i.metal` (amd64) | Kata needs `/dev/kvm`; Graviton metal lacks KVM |
 | Node provisioning | Karpenter | Auto-scale bare metal on demand, avoid idle cost |
 | Container runtime | `kata-qemu` | VM-level tenant isolation (guest kernel per pod) |
-| NetworkPolicy engine | Calico iptables policy-only | VPC CNI eBPF conflicts with Kata TC redirect |
+| NetworkPolicy engine | VPC CNI eBPF standard mode | Native EKS support, validated with Kata on EKS 1.35 / VPC CNI v1.21.1 |
 | State storage | S3 + `aws s3 sync` | S3 CSI (mountpoint-s3) is write-once FUSE, can't overwrite |
 | Data isolation | S3 ABAC via Pod Identity session tags | Zero extra IAM Roles; `${aws:PrincipalTag/kubernetes-pod-name}` restricts prefix |
 | Tenant registry | DynamoDB PAY_PER_REQUEST | Multi-replica concurrent R/W, cross-pod persistence |
@@ -188,9 +188,9 @@ sequenceDiagram
             Router->>User: 🏗 Starting up, please wait...
         end
 
-        loop healthz poll — every 3s, up to 5m30s
-            Router->>Pod: GET pod_ip:18789/healthz
-            Pod-->>Router: 200 OK or connection refused
+        loop probe webhook port — every 3s, up to 5m30s
+            Router->>Pod: TCP connect pod_ip:8787 (any HTTP response = ready)
+            Pod-->>Router: connection success or refused
         end
 
         Router->>Pod: POST pod_ip:8787/telegram-webhook
@@ -254,8 +254,8 @@ flowchart LR
 
         subgraph Main ["Containers"]
             direction LR
-            GW["openclaw gateway<br/>:8787 webhook<br/>:18789 healthz"]:::main
-            SYNC["s3-sync sidecar<br/><i>aws-cli:2.15.30</i><br/>every 60s + SIGTERM flush"]:::sidecar
+            GW["openclaw gateway<br/>:8787 webhook"]:::main
+            SYNC["s3-sync sidecar<br/><i>aws-cli:2.15.30</i><br/>every 60s + PreStop final sync"]:::sidecar
         end
 
         Init --> Main
@@ -286,7 +286,7 @@ flowchart LR
 |---|---|---|
 | **s3-restore** (init) | `public.ecr.aws/aws-cli/aws-cli:2.15.30` | Restore state & workspace from S3 before OpenClaw starts. Excludes `openclaw.json`, `*.lock` |
 | **openclaw** (main) | `{ECR}/openclaw@sha256:{digest}` (pinned) | OpenClaw Gateway — Telegram webhook mode. Config rendered from ConfigMap template via `envsubst` on start |
-| **s3-sync** (sidecar) | `public.ecr.aws/aws-cli/aws-cli:2.15.30` | `aws s3 sync` every 60 s + final sync on SIGTERM. Excludes `openclaw.json*` |
+| **s3-sync** (sidecar) | `public.ecr.aws/aws-cli/aws-cli:2.15.30` | `aws s3 sync` every 60 s. PreStop hook runs final sync via shared ConfigMap script (`openclaw-sync-script`). Excludes `openclaw.json*`, `.workspace-state.json.*`, `workspace-state.json.tmp-*` |
 
 ### Volumes
 
@@ -323,7 +323,7 @@ Tenant pods use **EKS Pod Identity** with session tags to scope S3 access per te
 
 | Mechanism | Detail |
 |---|---|
-| **Pod Identity Association** | Service account `openclaw-tenant` → IAM role `openclaw-tenant-pod-identity` |
+| **Pod Identity Association** | Service account `openclaw-tenant` → IAM role `openclaw-tenant-pod` |
 | **Session Tag** | `kubernetes-pod-name = {tenantID}` (injected by Pod Identity webhook) |
 | **IAM Condition** | `ListBucket` scoped by `s3:prefix`; `Get/Put/Delete` scoped by Resource ARN with `${aws:PrincipalTag/kubernetes-pod-name}` |
 | **Effect** | Each pod can only read/write its own `tenants/{tenantID}/` prefix — enforced at IAM level |
@@ -331,7 +331,7 @@ Tenant pods use **EKS Pod Identity** with session tags to scope S3 access per te
 ### Consistency Properties
 
 - **Last-write-wins**: `aws s3 sync` with no `--delete`. S3 accumulates extra files; OpenClaw tolerates extras.
-- **Loss window**: If pod is killed without SIGTERM (OOM, node failure), up to 60 s of state lost. Acceptable for agent memory (append-only).
+- **Loss window**: If pod is killed without graceful shutdown (OOM, node failure), up to 60 s of state lost. PreStop hook handles graceful termination (up to 120s `terminationGracePeriodSeconds`). Acceptable for agent memory (append-only).
 - **`openclaw.json` excluded**: Always regenerated from template via `envsubst`. Restored config would have wrong auth tokens.
 - **Lock files excluded**: `.lock` files from previous lifetime cause "session file locked" errors.
 
@@ -458,21 +458,19 @@ Network isolation uses **VPC CNI NetworkPolicy** (`NETWORK_POLICY_ENFORCING_MODE
 
 | Policy | Effect |
 |---|---|
-| **tenant-pod-isolation** | Ingress: only `app=router` on `:8787` and `:18789`. Egress: DNS, Pod Identity Agent, IMDS, all external (except VPC/Service CIDRs) |
+| **tenant-pod-isolation** | Ingress: only `app=router` on `:8787`. Egress: DNS, Pod Identity Agent, IMDS, all external (except VPC/Service CIDRs) |
 | **orchestrator-policy** | Egress to Redis, K8s API server (`172.20.0.1:443`), Pod Identity Agent, external HTTPS |
 | **router-policy** | Ingress from VPC (ALB). Egress to orchestrator, Redis, tenant pods, external HTTPS |
 | **redis-policy** | Ingress from orchestrator + router only. No egress |
 | **warm-pool-policy** | No ingress, no egress (`sleep infinity`) |
 
 > **Key egress rules**: Must explicitly allow Pod Identity Agent (`169.254.170.23:80,443`) and IMDS (`169.254.169.254:80`) — without these, AWS credential retrieval fails inside tenant pods.
-| **Allow Pod → Telegram** | Egress to `api.telegram.org` (Bot API replies) |
-| **Deny Pod → Pod** | No lateral movement between tenant pods |
 
 ### IAM
 
 | Role | Service Account | Permissions |
 |---|---|---|
-| `openclaw-tenant-pod-identity` | `openclaw-tenant` | Bedrock: `InvokeModel`, `InvokeModelWithResponseStream`; S3: read/write on `<S3_BUCKET>` (scoped by ABAC session tags) |
+| `openclaw-tenant-pod` | `openclaw-tenant` | Bedrock: `InvokeModel`, `InvokeModelWithResponseStream`; S3: read/write on `<S3_BUCKET>` (scoped by ABAC session tags) |
 
 ---
 
@@ -493,7 +491,7 @@ Network isolation uses **VPC CNI NetworkPolicy** (`NETWORK_POLICY_ENFORCING_MODE
 |---|---|
 | **Compute** | Each tenant in dedicated Kata VM (QEMU) — hardware-enforced memory/CPU isolation |
 | **Storage** | Dedicated S3 prefix per tenant (`tenants/{tenantID}/`), enforced by ABAC session tags |
-| **Network** | Calico NetworkPolicy — deny lateral movement, allow only required egress |
+| **Network** | VPC CNI NetworkPolicy (eBPF standard mode) — deny lateral movement, allow only required egress |
 | **IAM** | Pod Identity session tags + IAM condition on `${aws:PrincipalTag/kubernetes-pod-name}` |
 
 > **Shared IAM role caveat**: All tenant pods share one IAM role (single service account). CloudTrail cannot attribute Bedrock usage per tenant — application-level tracking is needed for billing.

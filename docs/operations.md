@@ -62,7 +62,7 @@ curl -X DELETE http://localhost:18800/tenants/alice
 kubectl get pods -n tenants
 
 # Tenant registry (DynamoDB)
-aws dynamodb scan --table-name tenant-registry --region us-west-2 \
+aws dynamodb scan --table-name tenant-registry --region $AWS_REGION \
   --query 'Items[*].{id:tenant_id.S,status:status.S,ip:pod_ip.S}'
 
 # Router cache (Redis)
@@ -82,13 +82,13 @@ kubectl logs -n tenants -l app=router -f | grep -v healthz
 kubectl logs -n tenants -l app=orchestrator -f | grep -v healthz
 
 # Tenant pod (OpenClaw)
-kubectl logs -n tenants openclaw-<tenant> -c openclaw -f
+kubectl logs -n tenants <tenant> -c openclaw -f
 
 # s3-restore init container
-kubectl logs -n tenants openclaw-<tenant> -c s3-restore
+kubectl logs -n tenants <tenant> -c s3-restore
 
 # s3-sync sidecar
-kubectl logs -n tenants openclaw-<tenant> -c s3-sync -f
+kubectl logs -n tenants <tenant> -c s3-sync -f
 ```
 
 ---
@@ -123,7 +123,7 @@ kubectl logs -n tenants -l app=orchestrator --since=5m | grep -v healthz
 4. Check DynamoDB status:
 ```bash
 aws dynamodb get-item --table-name tenant-registry \
-  --key '{"tenant_id": {"S": "<tenant>"}}' --region us-west-2
+  --key '{"tenant_id": {"S": "<tenant>"}}' --region $AWS_REGION
 ```
 
 ### Pod keeps getting killed after start
@@ -149,18 +149,18 @@ kubectl logs -n tenants -l app=router --since=5m | grep "retry\|forward"
 
 1. Check s3-restore completed successfully:
 ```bash
-kubectl logs -n tenants openclaw-<tenant> -c s3-restore
+kubectl logs -n tenants <tenant> -c s3-restore
 ```
 
 2. Check S3 bucket has state:
 ```bash
-aws s3 ls s3://<S3_BUCKET>/tenants/<tenant>/state/ --region us-west-2
+aws s3 ls s3://<S3_BUCKET>/tenants/<tenant>/state/ --region $AWS_REGION
 ```
 
 3. Check IAM pod identity has S3 access:
 ```bash
-kubectl exec -n tenants openclaw-<tenant> -c openclaw -- \
-  aws s3 ls s3://<S3_BUCKET>/tenants/<tenant>/ --region us-west-2
+kubectl exec -n tenants <tenant> -c openclaw -- \
+  aws s3 ls s3://<S3_BUCKET>/tenants/<tenant>/ --region $AWS_REGION
 ```
 
 ---
@@ -168,16 +168,14 @@ kubectl exec -n tenants openclaw-<tenant> -c openclaw -- \
 ## Warm Pool
 
 ```bash
-# Current warm pool size
-kubectl get deployment warm-pool -n tenants -o jsonpath='{.spec.replicas}'
+# View warm pool config
+otm config get
 
-# Scale warm pool
-kubectl scale deployment warm-pool -n tenants --replicas=3
+# Set warm pool target
+otm config set warm-pool-target 3
 
-# Or via orchestrator API
-curl -X POST http://localhost:18800/warm-pool/scale \
-  -H "Content-Type: application/json" \
-  -d '{"replicas": 3}'
+# Check warm pool pods
+kubectl get pods -n tenants -l app=warm-pool
 ```
 
 ---
@@ -188,11 +186,11 @@ curl -X POST http://localhost:18800/warm-pool/scale \
 
 ```bash
 NEW_DIGEST=$(aws ecr describe-images --repository-name openclaw \
-  --region us-west-2 \
+  --region $AWS_REGION \
   --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageDigest' --output text)
 
 kubectl set env deployment/orchestrator -n tenants \
-  OPENCLAW_IMAGE=<AWS_ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/openclaw@${NEW_DIGEST}
+  OPENCLAW_IMAGE=<AWS_ACCOUNT_ID>.dkr.ecr.${AWS_REGION}.amazonaws.com/openclaw@${NEW_DIGEST}
 
 # warm-pool rolls out automatically, existing tenant pods use new image on next wake
 ```
@@ -223,6 +221,6 @@ otm tenant wake alice
 otm tenant delete alice
 otm tenant patch alice --idle-timeout 1800
 
-otm warm-pool status
-otm warm-pool scale --replicas 3
+otm config get
+otm config set warm-pool-target 3
 ```

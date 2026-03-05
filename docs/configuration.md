@@ -55,7 +55,7 @@ All configurable parameters for the openclaw-tenancy platform.
 
 ## OpenClaw Pod Spec
 
-Tenant pods (`openclaw-{tenantID}`) are created dynamically by the orchestrator.
+Tenant pods (`{tenantID}`) are created dynamically by the orchestrator.
 
 ### Pod-level Fields
 
@@ -105,7 +105,7 @@ Tenant pods (`openclaw-{tenantID}`) are created dynamically by the orchestrator.
 |-------|------|-----|-------------|
 | `tenant_id` | String | **PK** | Unique tenant identifier |
 | `status` | String | — | `idle` or `running` |
-| `pod_name` | String | — | `openclaw-{tenantID}`. Empty when idle. |
+| `pod_name` | String | — | `{tenantID}`. Empty when idle. |
 | `pod_ip` | String | — | Pod cluster IP. Empty when idle. |
 | `namespace` | String | — | Always `tenants` |
 | `s3_prefix` | String | — | `tenants/{tenantID}/` |
