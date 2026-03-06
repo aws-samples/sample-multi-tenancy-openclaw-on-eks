@@ -313,12 +313,15 @@ kubectl apply -f deploy/02-karpenter.yaml
 ```
 
 This creates:
-- **`kata` EC2NodeClass**: devmapper UserData for containerd thin-pool snapshotter
+- **`kata` EC2NodeClass**: devmapper UserData for containerd thin-pool snapshotter (x86_64)
 - **`kata-metal` NodePool**: x86_64 metal instances, `kata-runtime=true:NoSchedule` taint
+- **`kata-arm64` EC2NodeClass**: Same as `kata`, plus a systemd service that auto-patches `static_sandbox_resource_mgmt=true` for arm64 CPU hotplug workaround
+- **`kata-metal-arm64` NodePool**: Graviton 3+ (gen >6) metal instances, arm64
 
 Key settings:
 - `consolidateAfter: 300s` — prevents Karpenter from terminating nodes before kata-deploy finishes (~65s)
-- Metal instances only (c6i.metal, m6i.metal, etc.)
+- x86_64: c6i.metal, c7i.metal, m6i.metal, etc.
+- arm64: c7g.metal, m7g.metal, etc. (Graviton 3+)
 
 ### 6b. kata-deploy DaemonSet + RuntimeClass
 
@@ -344,7 +347,7 @@ scheduling:
 EOF
 ```
 
-Deploy the kata-deploy DaemonSet (see full spec in `deploy/02-karpenter.yaml`). Use `nodeAffinity` to target only metal instance types:
+Deploy the kata-deploy DaemonSet (see full spec in `deploy/02-karpenter.yaml`). Use `nodeAffinity` with the `katacontainers.io/kata-runtime` label to target kata nodes:
 
 ```yaml
 affinity:
@@ -352,14 +355,10 @@ affinity:
     requiredDuringSchedulingIgnoredDuringExecution:
       nodeSelectorTerms:
       - matchExpressions:
-        - key: node.kubernetes.io/instance-type
+        - key: katacontainers.io/kata-runtime
           operator: In
           values:
-          - c6i.metal
-          - c7i.metal
-          - m6i.metal
-          - r6i.metal
-          # ... other metal types
+          - "true"
 ```
 
 > The DaemonSet shows `DESIRED=0` until a metal node is provisioned by Karpenter.
@@ -713,7 +712,9 @@ kubectl exec -n tenants test-tenant -- env | grep AWS_CONTAINER_CREDENTIALS
 | Redis Deployment | tenants | 1 replica |
 | NetworkPolicies | tenants | 5 |
 | Ingress (ALB) | tenants | 1 |
-| kata-metal NodePool | cluster-scoped | 1 |
+| kata-metal NodePool | cluster-scoped | 1 (x86_64) |
+| kata-metal-arm64 NodePool | cluster-scoped | 1 (arm64, optional) |
+| kata / kata-arm64 EC2NodeClass | cluster-scoped | 1 each |
 | kata-deploy DaemonSet | kube-system | 0 (scales with metal nodes) |
 | kata-qemu RuntimeClass | cluster-scoped | 1 |
 
