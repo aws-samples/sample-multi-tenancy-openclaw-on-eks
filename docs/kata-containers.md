@@ -26,7 +26,7 @@ The guest VM starts with **1 vCPU**. Additional vCPUs are hot-plugged on demand 
 |-----------|-------|--------|
 | `default_memory` | 2048 MiB | `configuration-qemu.toml` |
 | `memory_slots` | 10 | `configuration-qemu.toml` |
-| `maxmem` | 16,726 MiB | QEMU command line (`-m 2048M,slots=10,maxmem=16726M`) |
+| `maxmem` | 16,726 MiB | QEMU command line (`-m 2048M,slots=10,maxmem=16726M`). Derived from `default_memory` (2048 MiB) + 10 memory slots × ~1,468 MiB per slot |
 | `enable_mem_prealloc` | false | `configuration-qemu.toml` |
 | Memory backend | `/dev/shm` (shared, file-backed) | QEMU command line |
 | RuntimeClass overhead | 160 MiB | `kata-qemu` RuntimeClass `overhead.podFixed.memory` |
@@ -167,13 +167,282 @@ This is **not recommended** for our warm pool model where most pods are idle.
 
 Kata Containers requires hardware virtualization (KVM):
 
-| Instance | Type | KVM | Status |
-|----------|------|-----|--------|
-| c6i.metal | Bare metal | ✅ Native `/dev/kvm` | Tested — 210 pods |
-| c8i.2xlarge | Nitro (non-metal) | ✅ Nested virtualization | Tested — RSS measurements |
-| Graviton (arm64) bare metal | Bare metal | ❌ No KVM support | **Not supported** |
+| Instance | Arch | Type | KVM | Kata Status |
+|----------|------|------|-----|-------------|
+| c6i.metal | x86_64 | Bare metal | ✅ Native `/dev/kvm` | ✅ Tested — 210 pods |
+| c8i.2xlarge | x86_64 | Nitro (non-metal) | ✅ Nested virtualization | ✅ Tested — RSS measurements |
+| c7g.metal | arm64 | Bare metal (Graviton 3) | ✅ Native `/dev/kvm` | ✅ Tested — requires special config |
+| m7g.metal | arm64 | Bare metal (Graviton 3) | ✅ Native `/dev/kvm` | ✅ Should work (same arch) |
 
-> **Important**: arm64/Graviton bare metal instances do not expose `/dev/kvm`. Kata Containers on EKS requires **amd64 instances** with KVM access — either bare metal or Nitro instances with nested virtualization enabled.
+## Kata Containers on Graviton (arm64) Bare Metal
+
+### Overview
+
+Kata Containers **can run on Graviton bare metal instances** (c7g.metal, m7g.metal, etc.), but requires a specific configuration change to work around an arm64 hardware limitation. Without this change, pod creation fails with:
+
+```
+failed to create shim task: failed to query hotpluggable CPUs:
+QMP command failed: machine does not support hot-plugging CPUs
+```
+
+### Why arm64 Needs Special Handling
+
+On x86_64, Kata uses **CPU hotplug** to dynamically add vCPUs to a running VM:
+
+1. VM starts with 1 vCPU (`default_vcpus=1`) for fast boot
+2. Container is created with a CPU limit (e.g., `cpu: 1`)
+3. Kata sends QMP `device_add` to QEMU → hotplugs additional vCPUs
+4. Guest kernel receives ACPI notification → brings new CPUs online
+
+On arm64, this flow breaks because:
+
+- **GIC (Generic Interrupt Controller)** requires all CPU redistributors to be declared at VM boot time — they cannot be added at runtime
+- QEMU's `virt` machine type (the only option for arm64) **does not support ACPI-driven CPU hotplug**
+- The arm64 Linux kernel supports CPU online/offline (toggling existing CPUs) but not adding entirely new CPU devices after boot
+
+**In short**: x86 ACPI is a "discover and use" model; arm64 Device Tree is a "declare at boot" model.
+
+### The Fix: `static_sandbox_resource_mgmt`
+
+Kata provides a configuration flag that pre-allocates all vCPUs at VM startup, bypassing hotplug entirely:
+
+```toml
+# /opt/kata/share/defaults/kata-containers/configuration-qemu.toml
+static_sandbox_resource_mgmt = true
+```
+
+With this enabled, Kata:
+
+1. Reads the Pod's `resources.limits.cpu` **before** starting the VM
+2. Calculates total vCPUs: `default_vcpus + ceil(container CPU limit)`
+3. Starts QEMU with `-smp N` (all CPUs allocated upfront)
+4. **Never performs CPU hotplug** during the VM lifecycle
+5. Uses cgroups inside the guest for per-container CPU isolation
+
+**Tradeoffs:**
+- ❌ Cannot dynamically adjust CPU after VM starts (`docker update --cpus` won't work)
+- ❌ Pods **must** set `resources.limits.cpu`, otherwise they only get `default_vcpus` (1)
+- ✅ No hotplug latency — all CPUs available immediately
+- ✅ Simpler VM lifecycle — fewer failure modes
+
+For our use case (fixed CPU allocation per tenant), this is a perfect fit.
+
+### Karpenter Configuration
+
+Two new resources are needed for arm64 Kata nodes:
+
+**EC2NodeClass** (`kata-arm64`):
+
+```yaml
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: kata-arm64
+spec:
+  role: my-eks-cluster                    # Same node role as x86 kata
+  amiSelectorTerms:
+  - alias: al2023@latest                  # AL2023 supports arm64 natively
+  blockDeviceMappings:
+  - deviceName: /dev/xvda
+    ebs:
+      encrypted: true
+      volumeSize: 500Gi                   # Same as x86 — devmapper needs space
+      volumeType: gp3
+  subnetSelectorTerms:                    # Use explicit subnet IDs from your primary VPC CIDR
+  - id: subnet-0123456789abcdef0          # Replace with your subnet IDs
+  - id: subnet-0123456789abcdef1
+  - id: subnet-0123456789abcdef2
+  securityGroupSelectorTerms:
+  - tags:
+      karpenter.sh/discovery: my-eks-cluster
+  tags:
+    karpenter.sh/discovery: my-eks-cluster
+  userData: |
+    #!/bin/bash
+    set -ex
+    # ... (same devmapper thin-pool setup as x86 kata EC2NodeClass)
+
+    # --- Kata arm64 static sandbox config ---
+    # See "Automated Configuration via EC2NodeClass userData" section for details
+    cat > /usr/local/bin/kata-arm64-config.sh <<'KATA_SCRIPT'
+    #!/bin/bash
+    set -e
+    CONF=/opt/kata/share/defaults/kata-containers/configuration-qemu.toml
+    for i in $(seq 1 120); do
+      if [ -f "$CONF" ]; then
+        sed -i 's/^static_sandbox_resource_mgmt = false/static_sandbox_resource_mgmt = true/' "$CONF"
+        echo "kata arm64: static_sandbox_resource_mgmt=true patched"
+        exit 0
+      fi
+      sleep 5
+    done
+    echo "kata arm64: timeout waiting for kata config file"
+    exit 1
+    KATA_SCRIPT
+    chmod +x /usr/local/bin/kata-arm64-config.sh
+
+    cat > /etc/systemd/system/kata-arm64-config.service <<'KATA_SVC'
+    [Unit]
+    Description=Patch Kata config for arm64 static sandbox resource management
+    After=containerd.service
+    [Service]
+    Type=oneshot
+    RemainAfterExit=true
+    ExecStart=/usr/local/bin/kata-arm64-config.sh
+    [Install]
+    WantedBy=multi-user.target
+    KATA_SVC
+
+    systemctl daemon-reload
+    systemctl enable kata-arm64-config.service
+    systemctl start kata-arm64-config.service &
+```
+
+**NodePool** (`kata-metal-arm64`):
+
+```yaml
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: kata-metal-arm64
+spec:
+  weight: 10
+  template:
+    metadata:
+      labels:
+        katacontainers.io/kata-runtime: "true"
+    spec:
+      taints:
+      - key: kata-runtime
+        value: "true"
+        effect: NoSchedule
+      requirements:
+      - key: karpenter.k8s.aws/instance-category
+        operator: In
+        values: ["c", "m", "r"]           # r = memory-optimized, fits more pods
+      - key: karpenter.k8s.aws/instance-size
+        operator: In
+        values: ["metal"]
+      - key: karpenter.k8s.aws/instance-generation
+        operator: Gt
+        values: ["6"]                     # Graviton 3+ (c7g, m7g, r7g, etc.)
+      - key: karpenter.sh/capacity-type
+        operator: In
+        values: ["on-demand"]
+      - key: kubernetes.io/arch
+        operator: In
+        values: ["arm64"]
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: kata-arm64
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 300s
+```
+
+### kata-deploy DaemonSet
+
+Use the `katacontainers.io/kata-runtime: "true"` label as the DaemonSet's `nodeAffinity` selector. Since the Karpenter NodePool already sets this label in `template.metadata.labels`, every kata node gets the label at registration time, and kata-deploy automatically schedules to it — no instance type list maintenance needed.
+
+```yaml
+# kata-deploy DaemonSet nodeAffinity
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: katacontainers.io/kata-runtime
+                operator: In
+                values:
+                - "true"
+```
+
+This works for both x86 and arm64 nodes — any NodePool that labels nodes with `katacontainers.io/kata-runtime: "true"` will automatically get kata-deploy.
+
+> **Note**: kata-deploy automatically detects the host architecture and sets `machine_type = "virt"` for arm64 (instead of `q35` for x86). No manual intervention is needed for this setting.
+
+### Automated Configuration via EC2NodeClass userData
+
+After kata-deploy installs on a new arm64 node, `static_sandbox_resource_mgmt` must be patched to `true`. This is achieved with a systemd oneshot service embedded in the EC2NodeClass `userData`, which runs on every new node and waits for kata-deploy to write the config file before patching it.
+
+**How it works:**
+
+1. Cloud-init runs the userData script during node bootstrap
+2. The script creates a shell script (`/usr/local/bin/kata-arm64-config.sh`) that polls for the kata config file
+3. A systemd oneshot service (`kata-arm64-config.service`) is registered with `After=containerd.service`
+4. The service is started in background (`systemctl start ... &`) — it loops checking for `/opt/kata/share/defaults/kata-containers/configuration-qemu.toml`
+5. Once kata-deploy writes the file (~45s after node registration), the script patches `static_sandbox_resource_mgmt = true` via `sed`
+6. Next kata-qemu pod can start without CPU hotplug errors
+
+**Add this to the end of your `kata-arm64` EC2NodeClass `userData`:**
+
+```bash
+# --- Kata arm64 static sandbox config ---
+# kata-deploy writes the config file after it schedules on this node.
+# This service waits for the file and patches static_sandbox_resource_mgmt=true
+# to work around arm64 CPU hotplug limitation.
+cat > /usr/local/bin/kata-arm64-config.sh <<'KATA_SCRIPT'
+#!/bin/bash
+set -e
+CONF=/opt/kata/share/defaults/kata-containers/configuration-qemu.toml
+for i in $(seq 1 120); do
+  if [ -f "$CONF" ]; then
+    sed -i 's/^static_sandbox_resource_mgmt = false/static_sandbox_resource_mgmt = true/' "$CONF"
+    echo "kata arm64: static_sandbox_resource_mgmt=true patched"
+    exit 0
+  fi
+  sleep 5
+done
+echo "kata arm64: timeout waiting for kata config file"
+exit 1
+KATA_SCRIPT
+chmod +x /usr/local/bin/kata-arm64-config.sh
+
+cat > /etc/systemd/system/kata-arm64-config.service <<'KATA_SVC'
+[Unit]
+Description=Patch Kata config for arm64 static sandbox resource management
+After=containerd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/usr/local/bin/kata-arm64-config.sh
+
+[Install]
+WantedBy=multi-user.target
+KATA_SVC
+
+systemctl daemon-reload
+systemctl enable kata-arm64-config.service
+# Start in background — it loops waiting for kata-deploy to install
+systemctl start kata-arm64-config.service &
+```
+
+The systemd service typically polls for ~45 seconds before kata-deploy writes the config file. Total time from node ready to first successful kata-qemu pod is approximately 60–70 seconds. No manual intervention is required — new Graviton metal nodes receive the patch automatically.
+
+**Alternative approaches:**
+
+- **Manual kubectl debug**: Useful for one-off testing, but the patch is lost when the node is replaced
+  ```bash
+  kubectl debug node/<node-name> -it --image=busybox -- sh -c '
+    sed -i "s/^static_sandbox_resource_mgmt = false/static_sandbox_resource_mgmt = true/" \
+      /host/opt/kata/share/defaults/kata-containers/configuration-qemu.toml
+  '
+  ```
+- **Custom kata-deploy image**: Avoids post-install patching entirely, but requires maintaining a fork
+- **Post-install DaemonSet**: Adds an extra moving part; the systemd approach is simpler since it's self-contained in the EC2NodeClass
+
+### Important Notes
+
+- **Metal instance boot time**: Bare metal instances (c6i.metal, c7g.metal) take **8-12 minutes** to fully boot (hardware initialization). Once UserData completes, kubelet registers in ~30 seconds. Plan for this in cold start scenarios.
+
+- **Pod must specify CPU limits on arm64**: With `static_sandbox_resource_mgmt = true`, the VM size is determined at creation time from `resources.limits.cpu`. If no CPU limit is set, the VM starts with only `default_vcpus` (1 vCPU).
+
+- **EC2NodeClass subnet selection**: Use explicit subnet IDs in `subnetSelectorTerms`, not tag-based selectors. VPCs with secondary CIDRs (e.g., `100.64.0.0/16` for EKS Pod networking) may cause nodes to launch in the wrong subnet and fail to register with the API server.
 
 ## References
 
