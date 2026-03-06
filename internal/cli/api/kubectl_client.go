@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/shawn/openclaw-tenancy/internal/cli/k8s"
+	"github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/cli/k8s"
 )
 
 type KubectlClient struct {

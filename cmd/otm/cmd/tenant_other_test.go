@@ -5,7 +5,7 @@ import (
 	stdcontext "context"
 	"testing"
 
-	"github.com/shawn/openclaw-tenancy/internal/cli/api"
+	"github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/cli/api"
 	"github.com/stretchr/testify/assert"
 )
 

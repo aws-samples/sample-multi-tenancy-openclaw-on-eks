@@ -1,4 +1,4 @@
-module github.com/shawn/openclaw-tenancy
+module github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks
 
 go 1.24.0
 

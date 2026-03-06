@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/shawn/openclaw-tenancy/internal/cli/api"
-	"github.com/shawn/openclaw-tenancy/internal/cli/output"
+	"github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/cli/api"
+	"github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/cli/output"
 	"github.com/spf13/cobra"
 )
 

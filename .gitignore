@@ -33,3 +33,4 @@ node_modules/
 CONTEXT.md
 CHANGELOG.md
 README.aws-samples.md
+docs/diagrams/architecture.drawio

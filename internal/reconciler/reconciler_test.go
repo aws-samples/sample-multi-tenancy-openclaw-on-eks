@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	k8sclient "github.com/shawn/openclaw-tenancy/internal/k8s"
-	"github.com/shawn/openclaw-tenancy/internal/registry"
+	k8sclient "github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/k8s"
+	"github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/registry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"

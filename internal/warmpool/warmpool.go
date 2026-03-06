@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	k8sclient "github.com/shawn/openclaw-tenancy/internal/k8s"
+	k8sclient "github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/k8s"
 )
 
 const redisKey = "config:warm_pool_target"

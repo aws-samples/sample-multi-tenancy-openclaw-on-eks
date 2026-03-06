@@ -3,7 +3,7 @@ package cmd
 import (
 	"os"
 
-	"github.com/shawn/openclaw-tenancy/internal/cli/api"
+	"github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/cli/api"
 	"github.com/spf13/cobra"
 )
 

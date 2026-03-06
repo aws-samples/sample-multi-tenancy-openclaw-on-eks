@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/shawn/openclaw-tenancy/cmd/otm/cmd"
+	"github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/cmd/otm/cmd"
 )
 
 var (

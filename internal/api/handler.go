@@ -12,10 +12,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/redis/go-redis/v9"
-	k8sclient "github.com/shawn/openclaw-tenancy/internal/k8s"
-	"github.com/shawn/openclaw-tenancy/internal/lock"
-	"github.com/shawn/openclaw-tenancy/internal/registry"
-	"github.com/shawn/openclaw-tenancy/internal/telegram"
+	k8sclient "github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/k8s"
+	"github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/lock"
+	"github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/registry"
+	"github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/telegram"
 )
 
 // validTenantID matches valid DNS labels: lowercase alphanumeric and hyphens,

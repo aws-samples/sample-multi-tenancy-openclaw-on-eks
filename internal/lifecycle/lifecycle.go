@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	k8sclient "github.com/shawn/openclaw-tenancy/internal/k8s"
-	"github.com/shawn/openclaw-tenancy/internal/registry"
+	k8sclient "github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/k8s"
+	"github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks/internal/registry"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/leaderelection"
