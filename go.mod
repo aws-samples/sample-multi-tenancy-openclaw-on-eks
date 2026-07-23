@@ -1,6 +1,6 @@
 module github.com/aws-samples/sample-multi-tenancy-openclaw-on-eks
 
-go 1.25.0
+go 1.26.5
 
 require (
 	github.com/alicebob/miniredis/v2 v2.36.1
@@ -106,7 +106,7 @@ require (
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/term v0.43.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.11.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
